@@ -79,7 +79,7 @@ async def main() -> None:
                 description="Google Speech Recognition",
                 attribution=Attribution(
                     name="Cheerpipe",
-                    url="https://github.com/hugobloem/wyoming-google-stt/",
+                    url="https://github.com/cheerpipe/wyoming-google-stt/",
                 ),
                 version=__version__,
                 installed=True,
@@ -89,7 +89,7 @@ async def main() -> None:
                         description="Google Speech Recognition",
                         attribution=Attribution(
                             name="Cheerpipe",
-                            url="https://github.com/hugobloem/wyoming-google-stt/",
+                            url="https://github.com/cheerpipe/wyoming-google-stt/",
                         ),
                         version=__version__,
                         installed=True,
