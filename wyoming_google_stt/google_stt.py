@@ -1,7 +1,7 @@
 import logging
 from typing import Optional, List, AsyncIterable
 
-from google.cloud import speech_v1
+from google.cloud import speech_v1, speech
 from google.api_core.exceptions import GoogleAPIError
 from google.oauth2 import service_account
 
@@ -31,6 +31,7 @@ class GoogleSpeechTranscriberAsync:
         language_code: str,
         alternative_language_codes: Optional[List[str]],
         model: Optional[str],
+        phrases: List[str] = [],
     ):
         return speech_v1.RecognitionConfig(
             encoding=speech_v1.RecognitionConfig.AudioEncoding.LINEAR16,
@@ -38,6 +39,10 @@ class GoogleSpeechTranscriberAsync:
             language_code=language_code,
             alternative_language_codes=alternative_language_codes or [],
             model=model or "",
+            speech_contexts = [
+                    speech.SpeechContext(
+                        phrases=phrases,
+                        boost=20.0)] # Todo: Param
         )
 
     async def transcribe_streaming(
@@ -46,9 +51,10 @@ class GoogleSpeechTranscriberAsync:
         language_code: str = DEFAULT_LANGUAGE,
         alternative_language_codes: Optional[List[str]] = None,
         model: Optional[str] = None,
+        phrases: List[str] = [],
     ) -> str:
         """Transcribe audio stream async con Google Streaming API."""
-        config = self._build_config(language_code, alternative_language_codes, model)
+        config = self._build_config(language_code, alternative_language_codes, model, phrases)
         streaming_config = speech_v1.StreamingRecognitionConfig(
             config=config,
             interim_results=False,

@@ -54,6 +54,7 @@ class GoogleEventHandler(AsyncEventHandler):
                 language_code=self._language,
                 alternative_language_codes=self.speech_config.alternative_languages,
                 model=self.speech_config.model,
+                phrases = self.speech_config.phrases
             )
             await self.write_event(Transcript(text=text).event())
             _LOGGER.info("Transcription completed: %s", text)

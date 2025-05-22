@@ -9,7 +9,7 @@ from functools import partial
 
 from wyoming.info import AsrModel, AsrProgram, Attribution, Info
 from wyoming.server import AsyncServer
-#from .google_stt import GoogleSpeechTranscriber
+
 from .google_stt import GoogleSpeechTranscriberAsync
 from .handler import GoogleEventHandler
 from .version import __version__
@@ -48,6 +48,12 @@ def parse_arguments():
         help="Model name (e.g., llatest_long, latest_short, command_and_search, phone_call, video, default. (Default=latest_short)"
     )    
     parser.add_argument(
+        "--phrases",
+        nargs="+",
+        default=[],
+        help="Phrases to boost with SpeechContext (e.g., 'turn on the light' 'turn off the fan')"
+    )    
+    parser.add_argument(
         "--credentials-file",
         required=True,
         help="File containing Google STT credentials (e.g., /path/to/credentials.json)"
@@ -65,7 +71,8 @@ async def main() -> None:
     speech_config = SpeechConfig(
         language=args.language,
         alternative_languages=args.alternative_languages,
-        model=args.model
+        model=args.model,
+        phrases = args.phrases
     )
 
     # Set up logging
@@ -79,7 +86,7 @@ async def main() -> None:
                 description="Google Speech Recognition",
                 attribution=Attribution(
                     name="Cheerpipe",
-                    url="https://github.com/cheerpipe/wyoming-google-stt/",
+                    url="https://github.com/hugobloem/wyoming-google-stt/",
                 ),
                 version=__version__,
                 installed=True,
@@ -89,7 +96,7 @@ async def main() -> None:
                         description="Google Speech Recognition",
                         attribution=Attribution(
                             name="Cheerpipe",
-                            url="https://github.com/cheerpipe/wyoming-google-stt/",
+                            url="https://github.com/hugobloem/wyoming-google-stt/",
                         ),
                         version=__version__,
                         installed=True,
