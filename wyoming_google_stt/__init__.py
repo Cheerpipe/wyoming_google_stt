@@ -1,7 +1,10 @@
-from typing import Literal
-from pydantic import BaseModel
-from typing import List
+"""Wyoming server for Google STT."""
+from typing import List, Literal
 
+from pydantic import BaseModel
+
+# List of valid language codes for Google STT.
+# This is used for type validation in SpeechConfig.
 LANGUAGE_CODES = Literal[
     "af-ZA",
     "am-ET",
@@ -137,10 +140,28 @@ LANGUAGE_CODES = Literal[
     "zu-ZA",
 ]
 
+
 class SpeechConfig(BaseModel):
-    """Speech configuration."""
+    """
+    Configuration for Google Speech-to-Text.
+
+    Attributes:
+    ----------
+    language: str
+        The primary language code for transcription (e.g., "en-US").
+    alternative_languages: list[LANGUAGE_CODES]
+        A list of alternative language codes to detect.
+    model: str
+        The recognition model to use (e.g., "latest_short", "phone_call").
+    phrases: List[str]
+        A list of words and phrases to boost recognition for.
+    phrase_boost: float
+        The strength of the boost to apply to provided phrases (0-20).
+
+    """
 
     language: str
     alternative_languages: list[LANGUAGE_CODES] = ["en-US"]
     model: str = "latest_short"
     phrases: List[str] = []
+    phrase_boost: float = 20.0

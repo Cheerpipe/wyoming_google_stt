@@ -1,0 +1,15 @@
+
+services:
+  wyoming-google-stt:
+    container_name: wyoming-google-stt
+    image: wyoming-google-stt:latest
+    environment:
+      - DEBUG_LOGGING=TRUE
+      - CREDENTIALS_FILE=/data/credentials.json
+    volumes:
+      - ./credentials.json:/data/credentials.json
+    ports:
+      - 10300:10300
+    restart: unless-stopped
+        
+
