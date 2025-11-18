@@ -15,12 +15,40 @@ It functions as a **Speech-to-Text (STT) component** designed to be used by **Ho
 
 ## Prerequisites
 
-* **Google Cloud Platform Account:** You must have a GCP project with the **Speech-to-Text API** enabled.
-* **Service Account Key:** A downloaded JSON key file with permissions to use the Speech-to-Text API.
+* **Google Cloud Platform (GCP) Account**
+* **Service Account JSON Key** (created below)
 * **Docker**
 * **Docker Compose**
 
-# Quick Start
+---
+
+### 🔑 Generating Google Cloud Credentials (Service Account JSON)
+
+To enable cloud speech recognition, you must configure a Google Cloud project and generate a Service Account JSON key. **Note:** Google requires a billing account to be enabled on your project, even if your usage falls within the free usage tier.
+
+1.  **Set up GCP Project & Billing:**
+    * Open the [Google Cloud Console](https://console.cloud.google.com/).
+    * Create a new project or select an existing one.
+    * **Crucially, enable billing** for the chosen project.
+
+2.  **Enable the Speech-to-Text API:**
+    * In the GCP Console, navigate to the **APIs & Services** dashboard.
+    * Search for **"Cloud Speech-to-Text API"** and click the **ENABLE** button.
+
+3.  **Create a Service Account:**
+    * Go to the **IAM & Admin** > **Service Accounts** section.
+    * Click **CREATE SERVICE ACCOUNT**.
+    * Provide a clear **Service Account Name** (e.g., `wyoming-stt-access`) and description, then click **DONE**.
+
+4.  **Generate and Download the Key File:**
+    * From the same **IAM & Admin** > **Service Accounts** page, click the name of the Service Account you just created.
+    * Navigate to the **KEYS** tab and select **ADD KEY** > **Create new key**.
+    * Choose **JSON** as the key type and click **CREATE**.
+5.  **Finalize:** **Rename the downloaded file to `credentials.json`** and place it in the root directory where your `docker-compose.yaml` file is located. This file is required by the `Volumes` configuration.
+
+---
+
+## Quick Start
 
 1.  **Clone the repository:**
     ```bash
@@ -58,3 +86,9 @@ You can configure the service using environment variables in your `docker-compos
 | :--- | :--- | :--- |
 | **CREDENTIALS_FILE** | **REQUIRED.** Path to the credentials JSON file inside the container. | `/data/credentials.json` |
 | **DEBUG_LOGGING** | Set to `TRUE` to enable debug-level logging output. | `FALSE` |
+
+---
+
+## Credits and Acknowledgments
+
+A special thank you to **sdetweil** for creating and sharing the repository: [https://github.com/sdetweil/wyoming-google](https://github.com/sdetweil/wyoming-google). Your work provided the foundation and necessary inspiration for building this Wyoming STT component.
