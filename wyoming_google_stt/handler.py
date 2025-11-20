@@ -101,7 +101,8 @@ class GoogleEventHandler(AsyncEventHandler):
             _LOGGER.debug("Audio start received")
             # CRITICAL RELIABILITY: Use a bounded queue to apply backpressure.
             # Maxsize limits memory usage if Google STT is slow to consume.
-            self._audio_queue = asyncio.Queue(maxsize=16)
+            # Increased to 100 to allow for ~2 seconds of audio buffer (assuming 20ms chunks).
+            self._audio_queue = asyncio.Queue(maxsize=100)
             # Run the streaming task in the background
             self._streaming_task = asyncio.create_task(
                 self._streaming_transcription()
@@ -109,10 +110,21 @@ class GoogleEventHandler(AsyncEventHandler):
             return True
 
         if AudioChunk.is_type(event.type):
+            if self._streaming_task and self._streaming_task.done():
+                # If the streaming task has finished (e.g. single utterance detected),
+                # we should not try to put more audio into the queue as it will block forever
+                # if the queue is full.
+                _LOGGER.debug("Streaming task is done, ignoring audio chunk")
+                return True
+
             chunk = AudioChunk.from_event(event)
             if self._audio_queue is not None:
-                # This await may block if the queue is full (backpressure)
-                await self._audio_queue.put(chunk.audio)
+                try:
+                    # This await may block if the queue is full (backpressure)
+                    # We use a timeout to avoid blocking forever in case of weird state
+                    await asyncio.wait_for(self._audio_queue.put(chunk.audio), timeout=1.0)
+                except asyncio.TimeoutError:
+                    _LOGGER.warning("Audio queue full, dropping chunk")
             else:
                 _LOGGER.warning("AudioChunk received but queue is None")
             return True
