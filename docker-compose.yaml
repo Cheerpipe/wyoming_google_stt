@@ -1,15 +1,18 @@
-
 services:
   wyoming-google-stt:
     container_name: wyoming-google-stt
+    build: .
     image: wyoming-google-stt:latest
     environment:
-      - DEBUG_LOGGING=TRUE
       - CREDENTIALS_FILE=/data/credentials.json
+      - DEBUG_LOGGING=FALSE
+      - LANGUAGE=es-US
+      - ALTERNATIVE_LANGUAGES=en-US
+      - MODEL=latest_short
+    # Extra options are passed as arguments, for example:
+    # command: ["--phrases", "enciende la luz", "apaga la luz", "--phrase-boost", "10"]
     volumes:
-      - ./credentials.json:/data/credentials.json
+      - ./credentials.json:/data/credentials.json:ro
     ports:
       - 10300:10300
     restart: unless-stopped
-        
-

@@ -1,65 +1,73 @@
 """Wyoming server for Google STT."""
 import argparse
 import asyncio
-import contextlib
 import logging
 import os
-import signal
+import sys
 from functools import partial
 
+from pydantic import ValidationError
 from wyoming.info import AsrModel, AsrProgram, Attribution, Info
 from wyoming.server import AsyncServer
 
-from . import SpeechConfig
+from . import SpeechConfig, supported_languages
 from .google_stt import GoogleSpeechTranscriberAsync
 from .handler import GoogleEventHandler
 from .version import __version__
 
 _LOGGER = logging.getLogger(__name__)
 
-stop_event = asyncio.Event()
+REPOSITORY_URL = "https://github.com/Cheerpipe/wyoming_google_stt"
 
 
-def handle_stop_signal(*args):
-    """Handle shutdown signal and set the stop event."""
-    _LOGGER.info("Received stop signal (SIGTERM). Shutting down...")
-    stop_event.set()
+def _env_flag(name: str) -> bool:
+    """Return True if an environment variable is set to a truthy value."""
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def parse_arguments():
-    """Parse command-line arguments."""
+    """Parse command-line arguments (defaults can come from env vars)."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--uri", default="tcp://0.0.0.0:10300", help="unix:// or tcp://"
     )
     parser.add_argument(
         "--language",
-        default="es-US",
+        default=os.environ.get("LANGUAGE", "es-US"),
         help=(
             "Primary language for transcription (e.g., en-US, es-ES) "
-            "(Default: es-US)"
+            "(Default: es-US, env: LANGUAGE)"
         ),
     )
     parser.add_argument(
         "--alternative-languages",
-        nargs="+",
-        default=["en-US"],
+        nargs="*",
+        default=os.environ.get("ALTERNATIVE_LANGUAGES", "en-US").split(),
         help=(
-            "List of secondary languages for transcription "
-            "(e.g., en-US fr-FR) (Default: en-US)"
+            "Up to 3 secondary languages for transcription "
+            "(e.g., en-US fr-FR) (Default: en-US, env: ALTERNATIVE_LANGUAGES)"
         ),
     )
     parser.add_argument(
         "--model",
-        default="latest_short",
+        default=os.environ.get("MODEL", "latest_short"),
         help=(
-            "Model name (e.g., latest_long, latest_short, command_and_search) "
-            "(Default: latest_short)"
+            "Model name (e.g., latest_short, command_and_search) "
+            "(Default: latest_short, env: MODEL)"
+        ),
+    )
+    parser.add_argument(
+        "--single-utterance",
+        action=argparse.BooleanOptionalAction,
+        default=not _env_flag("DISABLE_SINGLE_UTTERANCE"),
+        help=(
+            "Stop recognition and audio upload after the first utterance "
+            "(Default: enabled)"
         ),
     )
     parser.add_argument(
         "--phrases",
-        nargs="+",
+        nargs="*",
         default=[],
         help=(
             "Phrases to boost with SpeechContext "
@@ -69,127 +77,128 @@ def parse_arguments():
     parser.add_argument(
         "--phrase-boost",
         type=float,
-        default=20.0,
-        help="Strength of phrase boost (0-20) (Default: 20.0)",
+        default=10.0,
+        help="Boost for --phrases and terms sent by Home Assistant (0-20) "
+        "(Default: 10.0)",
+    )
+    parser.add_argument(
+        "--names-boost",
+        type=float,
+        default=15.0,
+        help="Boost for names (entities, areas) sent by Home Assistant (0-20) "
+        "(Default: 15.0)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=10.0,
+        help="Seconds to wait for Google after the audio ends (Default: 10)",
     )
     parser.add_argument(
         "--credentials-file",
-        required=True,
-        help="File containing Google STT credentials (e.g., credentials.json)",
+        default=os.environ.get("CREDENTIALS_FILE"),
+        help=(
+            "File containing Google STT credentials (e.g., credentials.json) "
+            "(env: CREDENTIALS_FILE)"
+        ),
     )
-    parser.add_argument("--debug", action="store_true", help="Log DEBUG messages")
-    return parser.parse_args()
-
-
-async def main() -> None:
-    """Start Wyoming Google STT server."""
-    args = parse_arguments()
-    _LOGGER.debug(args)
-
-    if not os.path.exists(args.credentials_file):
-        _LOGGER.error("Credentials file not found: %s", args.credentials_file)
-        exit(1)
-
-    speech_config = SpeechConfig(
-        language=args.language,
-        alternative_languages=args.alternative_languages,
-        model=args.model,
-        phrases=args.phrases,
-        phrase_boost=args.phrase_boost,
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=_env_flag("DEBUG_LOGGING"),
+        help="Log DEBUG messages (env: DEBUG_LOGGING)",
     )
+    args = parser.parse_args()
+    if not args.credentials_file:
+        parser.error("--credentials-file (or CREDENTIALS_FILE) is required")
+    return args
 
-    # Set up logging
-    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
 
-    wyoming_info = Info(
+def build_info(model: str) -> Info:
+    """Build the Wyoming info advertised to Home Assistant."""
+    attribution = Attribution(name="Cheerpipe", url=REPOSITORY_URL)
+    return Info(
         asr=[
             AsrProgram(
-                name="Google Speech Recognition",
-                description="Google Speech Recognition",
-                attribution=Attribution(
-                    name="Cheerpipe",
-                    url="https://github.com/hugobloem/wyoming-google-stt/",
-                ),
+                name="google-stt",
+                description="Google Cloud Speech-to-Text",
+                attribution=attribution,
                 version=__version__,
                 installed=True,
                 models=[
                     AsrModel(
-                        name="Google Speech Recognition",
-                        description="Google Speech Recognition",
+                        name=model,
+                        description=f"Google Cloud Speech-to-Text ({model})",
                         attribution=Attribution(
-                            name="Cheerpipe",
-                            url="https://github.com/hugobloem/wyoming-google-stt/",
+                            name="Google Cloud",
+                            url="https://cloud.google.com/speech-to-text",
                         ),
-                        version=__version__,
+                        version=None,
                         installed=True,
-                        languages=[args.language],
+                        languages=supported_languages(),
                     )
                 ],
             )
         ],
     )
 
+
+async def main() -> None:
+    """Start Wyoming Google STT server."""
+    args = parse_arguments()
+
+    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
+    _LOGGER.debug(args)
+
+    if not os.path.exists(args.credentials_file):
+        _LOGGER.error("Credentials file not found: %s", args.credentials_file)
+        sys.exit(1)
+
+    try:
+        speech_config = SpeechConfig(
+            language=args.language,
+            alternative_languages=args.alternative_languages,
+            model=args.model,
+            single_utterance=args.single_utterance,
+            phrases=args.phrases,
+            phrase_boost=args.phrase_boost,
+            names_boost=args.names_boost,
+            timeout=args.timeout,
+        )
+    except ValidationError as err:
+        _LOGGER.error("Invalid configuration: %s", err)
+        sys.exit(1)
+
     _LOGGER.debug("Creating Google STT Transcriber")
-    google_stt = GoogleSpeechTranscriberAsync(
-        credentials_path=args.credentials_file
+    google_stt = GoogleSpeechTranscriberAsync(credentials_path=args.credentials_file)
+
+    server = AsyncServer.from_uri(args.uri)
+    _LOGGER.info(
+        "Ready (model=%s, language=%s, alternatives=%s)",
+        speech_config.model,
+        speech_config.language,
+        speech_config.alternative_languages,
     )
 
-    # Initialize server and run
-    _LOGGER.debug("Initializing server.")
-    server = AsyncServer.from_uri(args.uri)
-    _LOGGER.info("Ready")
-
-    server_task = None
-    try:
-        server_task = asyncio.create_task(
-            server.run(
-                partial(
-                    GoogleEventHandler,
-                    google_stt,
-                    wyoming_info,
-                    speech_config,
-                )
-            )
+    # The Wyoming server stops gracefully on SIGTERM.
+    await server.run(
+        partial(
+            GoogleEventHandler,
+            google_stt,
+            build_info(speech_config.model),
+            speech_config,
         )
-
-        # Wait for either the server task to finish, or the stop_event
-        # (from SIGTERM) to be set.
-        stop_wait_task = asyncio.create_task(stop_event.wait())
-
-        done, pending = await asyncio.wait(
-            [server_task, stop_wait_task],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-
-        for task in pending:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-
-    except asyncio.CancelledError:
-        # This is the expected path for Ctrl+C (SIGINT)
-        _LOGGER.info("Server cancelled (SIGINT). Shutting down.")
-
-    except Exception:
-        _LOGGER.exception("An error occurred while running the server")
-
-    finally:
-        # Ensure the server task is always cleaned up
-        if server_task and not server_task.done():
-            _LOGGER.debug("Cleaning up server task...")
-            server_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await server_task
-        _LOGGER.info("Server shut down.")
+    )
+    _LOGGER.info("Server shut down.")
 
 
-if __name__ == "__main__":
-    # We only handle SIGTERM.
-    # We let asyncio.run() handle SIGINT (KeyboardInterrupt) by default.
-    signal.signal(signal.SIGTERM, handle_stop_signal)
-
+def run() -> None:
+    """Run the server until stopped."""
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        # This block will now correctly catch the Ctrl+C
-        _LOGGER.debug("KeyboardInterrupt caught, shutting down.")
+        pass
+
+
+if __name__ == "__main__":
+    run()

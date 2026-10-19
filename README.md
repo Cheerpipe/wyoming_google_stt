@@ -38,7 +38,8 @@ To enable cloud speech recognition, you must configure a Google Cloud project an
 3.  **Create a Service Account:**
     * Go to the **IAM & Admin** > **Service Accounts** section.
     * Click **CREATE SERVICE ACCOUNT**.
-    * Provide a clear **Service Account Name** (e.g., `wyoming-stt-access`) and description, then click **DONE**.
+    * Provide a clear **Service Account Name** (e.g., `wyoming-stt-access`) and description.
+    * Grant it only the **Cloud Speech Client** role (`roles/speech.client`), then click **DONE**.
 
 4.  **Generate and Download the Key File:**
     * From the same **IAM & Admin** > **Service Accounts** page, click the name of the Service Account you just created.
@@ -55,16 +56,13 @@ To enable cloud speech recognition, you must configure a Google Cloud project an
     git clone https://github.com/Cheerpipe/wyoming_google_stt.git
     cd wyoming_google_stt
     ```
-2.  **Build the container image:**
+2.  **Configure:** Edit `docker-compose.yaml` to set the environment variables and options you need (see sections below).
+3.  **Build and run the container:**
     ```bash
-    bash scripts/build.sh
-    ```
-3.  **Configure:** Edit the `docker-compose.yaml` file to set your **required** environment variables (`DEBUG_LOGGING` AND `CREDENTIALS_FILE`) and volume paths (see sections below).
-4.  **Run the container:**
-    ```bash
-    docker compose up -d
+    docker compose up -d --build
     ```
     (Use `-d` for detached execution.)
+4.  **Add it to Home Assistant:** *Settings* > *Devices & services* > *Add integration* > *Wyoming Protocol*, using the host of the container and port `10300`.
 
 ---
 
@@ -74,7 +72,7 @@ The server requires a volume mount for the Google Cloud credentials file.
 
 | Path (Inside Container) | Description | Recommended Host Mount Example |
 | :--- | :--- | :--- |
-| **/data/credentials.json** | **REQUIRED.** The JSON file containing your Google Cloud Service Account keys. | `./credentials.json` |
+| **/data/credentials.json** | **REQUIRED.** The JSON file containing your Google Cloud Service Account keys. Mount it read-only. | `./credentials.json:/data/credentials.json:ro` |
 
 ---
 
@@ -86,6 +84,47 @@ You can configure the service using environment variables in your `docker-compos
 | :--- | :--- | :--- |
 | **CREDENTIALS_FILE** | **REQUIRED.** Path to the credentials JSON file inside the container. | `/data/credentials.json` |
 | **DEBUG_LOGGING** | Set to `TRUE` to enable debug-level logging output. | `FALSE` |
+| **LANGUAGE** | Primary language. | `es-US` |
+| **ALTERNATIVE_LANGUAGES** | Up to 3 secondary languages, separated by spaces. Empty to disable. | `en-US` |
+| **MODEL** | Google STT v1 model. `latest_short` or `command_and_search` are best for voice commands. | `latest_short` |
+| **DISABLE_SINGLE_UTTERANCE** | Set to `TRUE` to keep listening after the first utterance. | `FALSE` |
+
+## Configuration (Command-Line Options)
+
+Every option can also be passed as an argument (`command:` in `docker-compose.yaml`). Arguments override environment variables.
+
+| Option | Description | Default |
+| :--- | :--- | :--- |
+| `--credentials-file` | Path to the credentials JSON file. | `CREDENTIALS_FILE` |
+| `--language` | Primary language. | `es-US` |
+| `--alternative-languages` | Up to 3 secondary languages. | `en-US` |
+| `--model` | Recognition model. | `latest_short` |
+| `--single-utterance` / `--no-single-utterance` | Stop recognition (and audio upload) after the first utterance. If the model rejects it, the server retries without it. | enabled |
+| `--phrases` | Phrases to boost (e.g. `'enciende la luz' 'apaga la luz'`). | none |
+| `--phrase-boost` | Boost (0-20) for `--phrases` and terms sent by Home Assistant. High values cause false positives. | `10` |
+| `--names-boost` | Boost (0-20) for names (entities, areas) sent by Home Assistant. | `15` |
+| `--timeout` | Seconds to wait for Google after the audio ends. | `10` |
+| `--uri` | Address to listen on. | `tcp://0.0.0.0:10300` |
+| `--debug` | Log debug messages. | `DEBUG_LOGGING` |
+
+### Language handling
+
+* If Home Assistant asks for a language, it becomes the primary one and the configured languages are used as alternatives. Generic codes such as `es` are mapped to the configured variant (e.g. `es-US`).
+* The language detected by Google is returned to Home Assistant with the transcript.
+
+### Phrase boosting
+
+Besides `--phrases`, the names and terms that Home Assistant sends with each request (`transcript_names` and `transcript_terms`, Wyoming 1.10+) are boosted automatically.
+
+---
+
+## Staying within the free tier
+
+Google STT **v1** includes 60 free minutes per month (billed per second, rounded per request); this server uses v1 for that reason. To avoid surprises:
+
+* Keep `--single-utterance` enabled: audio stops being uploaded as soon as Google detects the end of the command.
+* Each transcription logs the seconds of audio sent (`Transcription completed (3.2s of audio sent ...)`).
+* Budget alerts only notify you. For a hard limit, lower the Speech-to-Text API request quotas in *IAM & Admin* > *Quotas*.
 
 ---
 

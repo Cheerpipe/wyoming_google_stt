@@ -8,11 +8,6 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 WORKDIR /usr/wyoming_google_stt
 
-# Copy proxy files
-COPY wyoming_google_stt ./wyoming_google_stt
-COPY scripts ./
-COPY requirements.txt ./	
-
 RUN \
     apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -20,6 +15,12 @@ RUN \
         python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install -r requirements.txt
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
-ENTRYPOINT ["bash", "start.sh"]
+COPY wyoming_google_stt ./wyoming_google_stt
+
+EXPOSE 10300
+
+# Options can be set with env vars (see README) or appended as arguments.
+ENTRYPOINT ["python3", "-m", "wyoming_google_stt"]

@@ -1,16 +1,24 @@
 """Wyoming event handler for Google STT."""
 import asyncio
+import contextlib
 import logging
-from typing import AsyncIterable, Optional
+from typing import List, Optional
 
 from wyoming.asr import Transcribe, Transcript
-from wyoming.audio import AudioChunk, AudioStart, AudioStop
+from wyoming.audio import AudioChunk, AudioChunkConverter, AudioStart, AudioStop
 from wyoming.event import Event
 from wyoming.info import Describe, Info
 from wyoming.server import AsyncEventHandler
 
 from . import SpeechConfig
-from .google_stt import GoogleSpeechTranscriberAsync
+from .google_stt import (
+    CHANNELS,
+    SAMPLE_RATE,
+    SAMPLE_WIDTH,
+    AudioStream,
+    GoogleSpeechTranscriberAsync,
+    TranscriptionResult,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,11 +35,10 @@ class GoogleEventHandler(AsyncEventHandler):
         The pre-computed Info event to send on Describe.
     speech_config: SpeechConfig
         The speech recognition configuration.
-    _language: str
-        The current language code for transcription.
-    _audio_queue: Optional[asyncio.Queue[Optional[bytes]]]
-        Queue for passing audio chunks to the streaming task.
-        `None` indicates the end of the stream.
+    _request: Transcribe
+        The last Transcribe request (language, names, terms).
+    _audio: Optional[AudioStream]
+        Audio of the current transcription.
     _streaming_task: Optional[asyncio.Task]
         The background task handling the streaming transcription.
 
@@ -50,45 +57,84 @@ class GoogleEventHandler(AsyncEventHandler):
         self.google_stt = google_stt
         self.wyoming_info_event = wyoming_info.event()
         self.speech_config = speech_config
-        self._language = speech_config.language
 
-        self._audio_queue: Optional[asyncio.Queue[Optional[bytes]]] = None
+        self._request = Transcribe()
+        self._converter = self._new_converter()
+        self._audio: Optional[AudioStream] = None
         self._streaming_task: Optional[asyncio.Task] = None
 
-    async def _audio_generator(self) -> AsyncIterable[bytes]:
-        """Async generator that yields audio chunks for Google Streaming."""
-        assert self._audio_queue is not None
-        while True:
-            chunk = await self._audio_queue.get()
-            if chunk is None:
-                # End of stream signal
-                break
-            yield chunk
+    @staticmethod
+    def _new_converter() -> AudioChunkConverter:
+        """Create a converter to the format sent to Google."""
+        return AudioChunkConverter(
+            rate=SAMPLE_RATE, width=SAMPLE_WIDTH, channels=CHANNELS
+        )
 
-    async def _streaming_transcription(self):
-        """Task that performs streaming transcription and publishes results."""
-        assert self._audio_queue is not None
+    async def _streaming_transcription(self, audio: AudioStream) -> TranscriptionResult:
+        """Perform streaming transcription for the current request."""
+        languages = self.speech_config.languages_for(self._request.language)
+        terms: List[str] = [
+            *self.speech_config.phrases,
+            *(self._request.transcript_terms or []),
+        ]
+        phrase_sets = [
+            (self._request.transcript_names or [], self.speech_config.names_boost),
+            (terms, self.speech_config.phrase_boost),
+        ]
+        _LOGGER.debug(
+            "Transcribing with languages=%s, names=%s, terms=%s",
+            languages,
+            len(self._request.transcript_names or []),
+            len(terms),
+        )
+
+        return await self.google_stt.transcribe_streaming(
+            audio=audio,
+            languages=languages,
+            model=self.speech_config.model,
+            single_utterance=self.speech_config.single_utterance,
+            phrase_sets=phrase_sets,
+        )
+
+    async def _cancel_transcription(self) -> None:
+        """Cancel the current transcription, if any."""
+        if self._streaming_task is not None:
+            self._streaming_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._streaming_task
+        self._streaming_task = None
+        self._audio = None
+
+    async def _finish_transcription(self) -> Transcript:
+        """Wait for the transcription and build the (only) Transcript event."""
+        assert self._audio is not None
+        assert self._streaming_task is not None
+        self._audio.end()
 
         try:
-            text = await self.google_stt.transcribe_streaming(
-                audio_async_generator=self._audio_generator(),
-                language_code=self._language,
-                alternative_language_codes=(
-                    self.speech_config.alternative_languages
-                ),
-                model=self.speech_config.model,
-                phrases=self.speech_config.phrases,
-                phrase_boost=self.speech_config.phrase_boost,
+            result = await asyncio.wait_for(
+                self._streaming_task, timeout=self.speech_config.timeout
             )
-            await self.write_event(Transcript(text=text).event())
-            _LOGGER.info("Transcription completed: %s", text)
-
-        except asyncio.CancelledError:
-            # Expected on graceful shutdown (AudioStop event).
-            _LOGGER.debug("Streaming transcription task was cancelled.")
-        except Exception:
+        except asyncio.TimeoutError:
+            _LOGGER.error(
+                "Google STT did not answer within %s seconds",
+                self.speech_config.timeout,
+            )
+            return Transcript(text="")
+        except Exception:  # pylint: disable=broad-exception-caught
             _LOGGER.exception("Error during streaming transcription")
-            await self.write_event(Transcript(text="").event())
+            return Transcript(text="")
+        finally:
+            self._streaming_task = None
+            self._audio = None
+
+        _LOGGER.info(
+            "Transcription completed (%.1fs of audio sent, language=%s): %s",
+            result.audio_seconds,
+            result.language,
+            result.text,
+        )
+        return Transcript(text=result.text, language=result.language)
 
     async def handle_event(self, event: Event) -> bool:
         """Handle a single Wyoming event."""
@@ -97,55 +143,45 @@ class GoogleEventHandler(AsyncEventHandler):
             _LOGGER.debug("Sent Wyoming info")
             return True
 
+        if Transcribe.is_type(event.type):
+            self._request = Transcribe.from_event(event)
+            _LOGGER.debug("Transcribe request: language=%s", self._request.language)
+            return True
+
         if AudioStart.is_type(event.type):
             _LOGGER.debug("Audio start received")
-            # CRITICAL RELIABILITY: Use a bounded queue to apply backpressure.
-            # Maxsize limits memory usage if Google STT is slow to consume.
-            # Increased to 100 to allow for ~2 seconds of audio buffer (assuming 20ms chunks).
-            self._audio_queue = asyncio.Queue(maxsize=100)
-            # Run the streaming task in the background
+            await self._cancel_transcription()
+            self._converter = self._new_converter()
+            self._audio = AudioStream()
             self._streaming_task = asyncio.create_task(
-                self._streaming_transcription()
+                self._streaming_transcription(self._audio)
             )
             return True
 
         if AudioChunk.is_type(event.type):
-            if self._streaming_task and self._streaming_task.done():
-                # If the streaming task has finished (e.g. single utterance detected),
-                # we should not try to put more audio into the queue as it will block forever
-                # if the queue is full.
-                _LOGGER.debug("Streaming task is done, ignoring audio chunk")
+            if self._audio is None:
+                _LOGGER.warning("AudioChunk received before AudioStart")
                 return True
-
-            chunk = AudioChunk.from_event(event)
-            if self._audio_queue is not None:
-                try:
-                    # This await may block if the queue is full (backpressure)
-                    # We use a timeout to avoid blocking forever in case of weird state
-                    await asyncio.wait_for(self._audio_queue.put(chunk.audio), timeout=1.0)
-                except asyncio.TimeoutError:
-                    _LOGGER.warning("Audio queue full, dropping chunk")
-            else:
-                _LOGGER.warning("AudioChunk received but queue is None")
+            if self._audio.closed:
+                # Google already has the full utterance; don't upload more.
+                return True
+            chunk = self._converter.convert(AudioChunk.from_event(event))
+            # The converter may return a bytearray, which protobuf rejects.
+            self._audio.put(bytes(chunk.audio))
             return True
 
         if AudioStop.is_type(event.type):
             _LOGGER.debug("Audio stop received")
-            if self._audio_queue is not None:
-                # Signal the end of the stream
-                await self._audio_queue.put(None)
-            if self._streaming_task is not None:
-                # Wait for the transcription to finish (or be cancelled)
-                await self._streaming_task
-                self._streaming_task = None
-            self._audio_queue = None
+            if self._audio is None:
+                transcript = Transcript(text="")
+            else:
+                transcript = await self._finish_transcription()
+            await self.write_event(transcript.event())
+            self._request = Transcribe()
             return False  # End session
 
-        if Transcribe.is_type(event.type):
-            transcribe = Transcribe.from_event(event)
-            if transcribe.language:
-                self._language = transcribe.language
-                _LOGGER.debug("Updated language to %s", self._language)
-            return True
-
         return True
+
+    async def disconnect(self) -> None:
+        """Cancel any running transcription when the client disconnects."""
+        await self._cancel_transcription()
